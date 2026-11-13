@@ -1,0 +1,1540 @@
+---
+title: "Dengue CABA - Análisis Exploratorio"
+author: "Carla Degliantoni"
+date: "`r Sys.Date()`"
+output: 
+  word_document:
+    reference_docx: "G:/Mi unidad/ITBA/TFI/datos/referencia_formato.docx"
+    toc: true
+    toc_depth: 6
+    number_sections: true
+    fig_height: 8
+    fig_width: 12
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+setwd("G:/Mi unidad/ITBA/TFI")
+getwd()
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, eval = TRUE, warning = FALSE, message = FALSE, comment = "")
+```
+
+```{r librerias}
+# Librerías
+library(tidyverse)
+library(readxl)
+library(sf)
+library(writexl)
+library(stringi)
+library(lubridate)
+library(knitr)       # kable()
+library(ggplot2)
+library(RColorBrewer)
+library(ggthemes)
+library(ggrepel)
+library(readr)
+library(ISOweek)
+library(data.table)
+library(httr)
+library(jsonlite)
+library(nasapower)
+library(riem)
+library(forecast)
+library(tsibble)
+library(fable)
+library(fabletools)
+library(feasts)
+library(urca)
+
+# Tablas en formato Word
+tabla_word <- function(df, caption = NULL) {
+  knitr::kable(df, caption = caption, format = "pandoc")
+}
+```
+
+---
+
+# Carga y preprocesamiento de datos
+
+## Carga de archivos epidemiológicos
+
+```{r carga_archivos}
+
+df1 <- read.csv("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-hasta-20181231.csv") %>%
+  rename("anio" = "ano") %>%
+  mutate(
+    departamento_id = as.character(as.numeric(departamento_id)),
+    provincia_id    = as.character(as.numeric(provincia_id)))
+
+df2 <- read_excel("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-hasta-20191231_3.xlsx",
+                  col_names = TRUE) %>%
+  rename("anio" = "año")
+
+df3 <- read_excel("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-hasta-20201231_1.xlsx",
+                  col_types = "text") %>%
+  rename("anio" = "año", "grupo_edad_id" = "grupo_edad_desc", "grupo_edad_desc" = "grupo_edad_id") %>%
+  select(1:7, 9, 8, 10) %>%
+  mutate(across(c(5, 6, 8, 10), as.numeric))
+
+df4 <- read_excel("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-hasta-20210731.xlsx",
+                  col_names = TRUE, col_types = "text") %>%
+  rename("anio" = "año") %>%
+  mutate(across(c(5, 6, 8, 10), as.numeric))
+
+df5 <- read_excel("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/1648473440-6ff92f5b32926ebfb17725a0ab8e991652470725-informacion-publica-dengue-zika-nacional-ha.xlsx",
+                  col_names = TRUE, col_types = "text") %>%
+  rename("anio" = "año", "provincia_nombre" = "provincia_id", "provincia_id" = "provincia_nombre") %>%
+  select(1, 2, 4, 3, 5:10, any_of("sexo")) %>%
+  mutate(across(c(5, 6, 8, 10), as.numeric))
+
+# Lectura de los CSV con formato estandarizado (df7 a df11)
+leer_csv_nacion <- function(path) {
+  fread(path, sep = ";", encoding = "Latin-1") %>%
+    rename(
+      "provincia_id"             = "id_prov_indec_residencia",
+      "departamento_id"          = "id_depto_indec_residencia",
+      "anio"                     = "anio_min",
+      "evento_nombre"            = "evento",
+      "grupo_edad_id"            = "id_grupo_etario",
+      "grupo_edad_desc"          = "grupo_etario",
+      "semanas_epidemiologicas"  = "sepi_min",
+      "cantidad_casos"           = "cantidad",
+      "provincia_nombre"         = "provincia_residencia",
+      "departamento_nombre"      = "departamento_residencia"
+    ) %>%
+    mutate(
+      departamento_id = as.character(as.numeric(departamento_id)),
+      provincia_id    = as.character(as.numeric(provincia_id))
+    ) %>%
+    select(1:5, 9, 6, 7, 8, 10, any_of("sexo"))
+}
+
+df6 <- fread("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-anio-2022.csv",
+             sep = ";", encoding = "Latin-1") %>%
+  rename("anio" = "año") %>%
+  mutate(
+    departamento_id = as.character(as.numeric(departamento_id)),
+    provincia_id    = as.character(as.numeric(provincia_id))
+  )
+
+df7  <- leer_csv_nacion("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-se-1-a-52-de-2023-2024-06-10.csv")
+df8  <- leer_csv_nacion("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-se-1-a-52-de-2024-2025-01-06.csv")
+df9  <- leer_csv_nacion("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-se-1-a-52-de-2024-2025-01-13.csv")
+df10 <- leer_csv_nacion("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-se-1-a-43-de-2025-2025-11-03.csv")
+df11 <- leer_csv_nacion("G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/informacion-publica-dengue-zika-nacional-se-1-a-52-de-2024-2025-05-05.csv")
+```
+
+## Unificación y limpieza
+
+```{r unificacion}
+dengue0 <- bind_rows(df1, df2, df3, df4, df5, df6, df7, df8, df9, df10, df11)
+```
+
+```{r correccion_semanas_evento}
+# En algunos archivos el número de semana vino en la columna evento_nombre
+dengue <- dengue0 %>%
+  mutate(
+    es_semana_en_evento = evento_nombre %in% as.character(1:52),
+    semanas_epidemiologicas = if_else(
+      es_semana_en_evento,
+      as.numeric(evento_nombre),
+      as.numeric(semanas_epidemiologicas)
+    ),
+    evento_nombre = if_else(
+      es_semana_en_evento,
+      "Dengue",
+      evento_nombre
+    )
+  ) %>%
+  select(-es_semana_en_evento)
+```
+
+```{r filtro_dengue}
+dengue1 <- dengue %>%
+  filter(evento_nombre %in% c("Dengue", "Dengue durante la gestación")) %>%
+  arrange(anio, semanas_epidemiologicas, provincia_nombre, departamento_nombre, grupo_edad_id)
+```
+
+```{r construccion_fecha_y_tasa}
+dengue2 <- dengue1 %>%
+  mutate(
+    casos_100mil = round(cantidad_casos / 100, 3),
+    fecha_iso    = ISOweek2date(paste0(anio, "-W", sprintf("%02d", semanas_epidemiologicas), "-1"))
+  )
+
+## Normalización de texto y de grupos etarios
+# Las columnas de texto traen caracteres mal codificados (UTF-8 leído como
+# Latin-1, por ejemplo "Ã±" por "ñ") y la misma franja etaria escrita de
+# distintas formas según el archivo ("Años" / "Anos", "45 a 64" / "45 a 65",
+# variantes de posneonato). Se corrigen antes de graficar para que cada
+# franja se sume en una sola categoría.
+fix_mojibake <- function(x) {
+  x %>%
+    str_replace_all(fixed("Ã±"), "ñ") %>%
+    str_replace_all(fixed("Ã­"), "í") %>%
+    str_replace_all(fixed("Ã³"), "ó") %>%
+    str_replace_all(fixed("Ã©"), "é") %>%
+    str_replace_all(fixed("Ã¡"), "á") %>%
+    str_replace_all(fixed("Ã‘"), "Ñ")
+}
+
+normalizar_grupo_edad <- function(x) {
+  # Variantes sin tilde, por palabra completa para no tocar otras columnas
+  limpio <- x %>%
+    str_replace_all(regex("\\bAnos\\b", ignore_case = TRUE), "Años") %>%
+    str_replace_all(regex("\\bAno\\b",  ignore_case = TRUE), "Año") %>%
+    str_replace_all(regex("\\bDias\\b", ignore_case = TRUE), "Días")
+
+  # Se extraen los dos números de cada franja y se arma una etiqueta única;
+  # el límite superior 64 se unifica en 65
+  nums <- str_extract_all(limpio, "\\d+")
+  n1   <- map_dbl(nums, ~ if (length(.x) >= 1) as.numeric(.x[1]) else NA_real_)
+  n2   <- map_dbl(nums, ~ if (length(.x) >= 2) as.numeric(.x[2]) else NA_real_)
+  n2_canon <- if_else(n2 %in% c(64, 65), 65, n2)
+
+  case_when(
+    is.na(limpio) |
+      limpio %in% c("", "Sin Especificar", "Desconocida", "(En Blanco)", "*Sin Dato*") ~
+      "Sin Especificar",
+    # Menores de 1 año: neonato, posneonato y "menor de 1 año" se agrupan en una sola franja
+    str_detect(limpio, regex("posneonato|^neonato|menor", ignore_case = TRUE)) ~
+      "Menores de 1 año",
+    # De 1 a 2 años: "igual a 1 año" y "de 13 a 24 meses" se agrupan en una sola franja
+    str_detect(limpio, regex("13 a 24 meses|igual a 1", ignore_case = TRUE)) ~
+      "De 1 a 2 años",
+    str_detect(limpio, regex("mayor", ignore_case = TRUE)) & !is.na(n1) ~
+      paste0("Mayores de ", n1, " años"),
+    !is.na(n1) & !is.na(n2_canon) ~
+      paste0("De ", n1, " a ", n2_canon, " años"),
+    TRUE ~ limpio
+  )
+}
+
+dengue3 <- dengue2 %>%
+  mutate(across(where(is.character), fix_mojibake)) %>%
+  mutate(across(where(is.character), str_to_title)) %>%
+  mutate(provincia_nombre = case_when(
+    provincia_nombre == "Cã³Rdoba"     ~ "Córdoba",
+    provincia_nombre == "Tucumã¡N"     ~ "Tucumán",
+    provincia_nombre == "Neuquã©N"     ~ "Neuquén",
+    provincia_nombre == "Entre Rã­os"  ~ "Entre Ríos",
+    provincia_nombre == "Rã­o Negro"   ~ "Río Negro",
+    provincia_nombre == "(En Blanco)"  ~ "Desconocida",
+    provincia_nombre == "*Sin Dato*"   ~ "Desconocida",
+    TRUE ~ provincia_nombre
+  )) %>%
+  mutate(grupo_edad_desc = normalizar_grupo_edad(grupo_edad_desc))
+```
+
+---
+
+# Datos climáticos
+
+## NASA POWER (fuente principal)
+
+```{r clima_nasapower}
+lat <- -34.61315
+lon <- -58.37723
+
+datos_caba <- get_power(
+  community    = "AG",
+  lonlat       = c(lon, lat),
+  pars         = c("PRECTOTCORR", "RH2M", "T2M"),
+  temporal_api = "daily",
+  dates        = c("2015-01-01", "2025-11-07")
+)
+
+# Agregación semanal (semanas de lunes a domingo, igual que la semana ISO del dengue)
+datos_semanales <- datos_caba %>%
+  mutate(
+    fecha  = as.Date(YYYYMMDD),
+    semana = floor_date(fecha, "week", week_start = 1)
+  ) %>%
+  group_by(semana) %>%
+  summarise(
+    precipitacion_total = sum(PRECTOTCORR, na.rm = TRUE),
+    humedad_promedio    = mean(RH2M, na.rm = TRUE),
+    temperatura_promedio = mean(T2M, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(semana)
+
+base_datos_clima <- datos_semanales %>%
+  mutate(
+    año              = year(semana),
+    mes              = month(semana),
+    semana_del_año   = week(semana)
+  ) %>%
+  select(
+    fecha_semana         = semana,
+    año, mes, semana_del_año,
+    precipitacion_mm     = precipitacion_total,
+    humedad_porcentaje   = humedad_promedio,
+    temperatura_celsius  = temperatura_promedio
+  )
+
+head(base_datos_clima) %>%
+  tabla_word("Primeras filas - datos climáticos semanales CABA")
+```
+
+## Aeroparque (fuente de validación climática)
+
+```{r clima_aeroparque}
+clima_aep <- riem_measures("SABE", date_start = "2015-01-01") %>%
+  select(
+    hora                    = valid,
+    temp_f                  = tmpf,
+    humedad                 = relh,
+    viento_nudos            = sknt,
+    precipitaciones_pulgadas = p01i,
+    presion_pulgadas        = alti
+  ) %>%
+  mutate(
+    fecha        = as.Date(hora),
+    temp         = round((temp_f - 32) / 1.8, 2),
+    presion_hpa  = round(presion_pulgadas * 33.863886666667, 0)
+  ) %>%
+  select(fecha, hora, temp, humedad, presion_hpa, viento_nudos) %>%
+  filter(temp <= 50, presion_hpa > 950, presion_hpa < 1038, viento_nudos <= 40)
+
+# Agregación diaria para facilitar la comparación
+clima_aep_diario <- clima_aep %>%
+  group_by(fecha) %>%
+  summarise(
+    temp_prom    = mean(temp, na.rm = TRUE),
+    humedad_prom = mean(humedad, na.rm = TRUE),
+    .groups      = "drop"
+  )
+```
+
+---
+
+# Cruce dengue × clima
+
+```{r cruce_dengue_clima}
+# El clima trae la semana calculada con week() de lubridate y el dengue
+# usa semana epidemiológica ISO, por lo que se recalcula la semana ISO
+# en las dos bases con ISOweek() antes de unirlas
+clima_iso_caba <- base_datos_clima %>%
+  mutate(
+    iso_str    = ISOweek::ISOweek(fecha_semana),
+    anio_iso   = as.integer(substr(iso_str, 1, 4)),
+    semana_iso = as.integer(substr(iso_str, 7, 8))
+  ) %>%
+  # Una fila por (año, semana ISO)
+  group_by(anio_iso, semana_iso) %>%
+  summarise(
+    precipitacion_mm    = mean(precipitacion_mm,    na.rm = TRUE),
+    humedad_porcentaje  = mean(humedad_porcentaje,  na.rm = TRUE),
+    temperatura_celsius = mean(temperatura_celsius, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+dengue_clima_caba <- dengue3 %>%
+  filter(provincia_nombre == "Caba") %>%
+  mutate(
+    iso_str    = ISOweek::ISOweek(fecha_iso),
+    anio_iso   = as.integer(substr(iso_str, 1, 4)),
+    semana_iso = as.integer(substr(iso_str, 7, 8))
+  ) %>%
+  arrange(fecha_iso) %>%
+  left_join(clima_iso_caba, by = c("anio_iso", "semana_iso")) %>%
+  select(-iso_str, -anio_iso, -semana_iso) %>%
+  rename("tasa_dengue" = "casos_100mil")
+
+# Cobertura climática tras la unión
+cat("Filas con clima válido:", sum(!is.na(dengue_clima_caba$temperatura_celsius)),
+    "de", nrow(dengue_clima_caba), "\n")
+```
+
+Base de dengue de CABA con el clima unido por año y semana epidemiológica, una fila por registro original.
+
+```{r exportar_dengue_clima_caba, eval=FALSE}
+writexl::write_xlsx(dengue_clima_caba,
+                    "G:/Mi unidad/ITBA/TFI/datos/dengue_clima_caba_completo.xlsx")
+```
+
+```{r agrupacion_comuna}
+dengue_clima_agrup_comuna <- dengue_clima_caba %>%
+  mutate(departamento_nombre = case_when(
+    departamento_nombre == "(En Blanco)"              ~ "Desconocida",
+    departamento_nombre == "*Sin Dato*"               ~ "Desconocida",
+    departamento_nombre == "2007"                     ~ "Comuna 7",
+    departamento_nombre == "Caba"                     ~ "Desconocida",
+    departamento_nombre == "+++++++++++++"            ~ "Desconocida",
+    departamento_nombre == "Ciudad De Buenos Aires"   ~ "Desconocida",
+    TRUE ~ departamento_nombre
+  )) %>%
+  group_by(departamento_nombre, fecha_iso) %>%
+  summarise(
+    tasa_dengue_prom = round(mean(tasa_dengue, na.rm = TRUE), 2),
+    hum_prom         = round(mean(humedad_porcentaje, na.rm = TRUE), 2),
+    prec_prom        = round(mean(precipitacion_mm, na.rm = TRUE), 2),
+    temp_prom        = round(mean(temperatura_celsius, na.rm = TRUE), 2),
+    .groups          = "drop"
+  )
+
+# Solo comunas identificadas (excluye "Desconocida")
+comunas_conocidas <- dengue_clima_agrup_comuna %>%
+  filter(departamento_nombre != "Desconocida",
+         !is.na(departamento_nombre))
+```
+
+```{r agrupacion_caba_total}
+# Total semanal de CABA: una fila por semana, sin desagregar por comuna
+dengue_clima_agrup <- dengue_clima_caba %>%
+  group_by(provincia_nombre, fecha_iso) %>%
+  summarise(
+    tasa_dengue_prom = round(sum(tasa_dengue, na.rm = TRUE), 2),
+    hum_prom         = round(mean(humedad_porcentaje, na.rm = TRUE), 2),
+    prec_prom        = round(mean(precipitacion_mm, na.rm = TRUE), 2),
+    temp_prom        = round(mean(temperatura_celsius, na.rm = TRUE), 2),
+    .groups          = "drop"
+  )
+```
+
+```{r exportar_insumos_anexo}
+# Se guardan estos objetos para que el anexo pueda cargarlos sin correr este Rmd
+ruta_insumos_anexo <- "G:/Mi unidad/ITBA/TFI/datos/"
+dir.create(ruta_insumos_anexo, recursive = TRUE, showWarnings = FALSE)
+
+saveRDS(dengue3,             file.path(ruta_insumos_anexo, "dengue3.rds"))
+saveRDS(comunas_conocidas,   file.path(ruta_insumos_anexo, "comunas_conocidas.rds"))
+saveRDS(dengue_clima_agrup,  file.path(ruta_insumos_anexo, "dengue_clima_agrup.rds"))
+```
+
+---
+
+# Análisis exploratorio
+
+Los análisis exploratorios secundarios (facetas por provincia, variables escaladas Min-Max y correlaciones dengue-clima por provincia) están en el anexo.
+
+## Estacionalidad en CABA
+
+Antes de bajar al nivel de comunas se analiza el patrón estacional general de CABA.
+
+```{r estacionalidad_caba}
+meses_es <- c("Ene", "Feb", "Mar", "Abr", "May", "Jun",
+              "Jul", "Ago", "Sep", "Oct", "Nov", "Dic")
+
+dengue_clima_caba %>%
+  mutate(mes_num = month(fecha_iso)) %>%
+  group_by(mes_num) %>%
+  summarise(casos_prom = mean(tasa_dengue, na.rm = TRUE), .groups = "drop") %>%
+  mutate(mes = factor(meses_es[mes_num], levels = meses_es)) %>%
+  ggplot(aes(x = mes, y = casos_prom)) +
+  geom_col(fill = "#d7191c", alpha = 0.85) +
+  labs(
+    x        = "Mes",
+    y        = "Tasa media (x 100.000 hab)"
+  ) +
+  theme_minimal()
+```
+
+## Evolución temporal en CABA
+
+```{r evolucion_provincias}
+dengue_clima_agrup %>%
+  ggplot(aes(x = as.Date(fecha_iso), y = tasa_dengue_prom)) +
+  geom_line(linewidth = 1, color = "#d7191c") +
+  labs(
+    x     = "Fecha",
+    y     = "Tasa de dengue (x 100.000 hab)"
+  ) +
+  theme_minimal()
+```
+
+## Comunas con mayor carga de dengue
+
+```{r top_comunas}
+comunas_top <- comunas_conocidas %>%
+  group_by(departamento_nombre) %>%
+  summarise(tasa_total = sum(tasa_dengue_prom, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(tasa_total)) %>%
+  head(6)
+```
+
+## Correlación entre clima y dengue por comuna
+
+```{r correlaciones_comunas}
+correlaciones_comunas <- comunas_conocidas %>%
+  group_by(departamento_nombre) %>%
+  summarise(
+    cor_temp   = cor(tasa_dengue_prom, temp_prom,  use = "complete.obs"),
+    cor_hum    = cor(tasa_dengue_prom, hum_prom,   use = "complete.obs"),
+    cor_precip = cor(tasa_dengue_prom, prec_prom,  use = "complete.obs"),
+    n_obs      = n(),
+    .groups    = "drop"
+  ) %>%
+  filter(n_obs > 10)
+
+cor_comunas_larga <- correlaciones_comunas %>%
+  pivot_longer(cols = starts_with("cor_"), names_to = "variable", values_to = "correlacion") %>%
+  mutate(variable = recode(variable,
+    "cor_temp"   = "Temperatura",
+    "cor_hum"    = "Humedad",
+    "cor_precip" = "Precipitación"
+  ))
+
+ggplot(cor_comunas_larga, aes(x = variable, y = departamento_nombre, fill = correlacion)) +
+  geom_tile() +
+  geom_text(aes(label = round(correlacion, 2)), color = "black", size = 3) +
+  scale_fill_gradient2(low = "red", high = "blue", mid = "white",
+                       midpoint = 0, limits = c(-1, 1), name = "Correlación") +
+  labs(
+    x     = "Variable climática", y = "Comuna"
+  ) +
+  theme_minimal()
+```
+
+```{r correlaciones_comunas_resumen}
+# Variación de la correlación entre comunas, por variable climática
+cor_comunas_larga %>%
+  group_by(Variable = variable) %>%
+  summarise(Mínimo  = round(min(correlacion), 2),
+            Mediana = round(median(correlacion), 2),
+            Máximo  = round(max(correlacion), 2),
+            Rango   = round(max(correlacion) - min(correlacion), 2),
+            .groups = "drop") %>%
+  tabla_word(caption = "Correlación entre la tasa de dengue y cada variable climática: variación entre comunas")
+```
+
+La serie climática es una sola para toda la Ciudad (NASA POWER en un punto, validada con Aeroparque) y se une a los casos solo por año y semana ISO, sin clave de comuna. Todas las comunas comparten entonces el mismo clima semanal: las diferencias del gráfico vienen de la serie de dengue de cada comuna y no de una medición climática propia.
+
+## Barrios populares (RENABAP) y comunas con mayor carga
+
+```{r mapa_comunas_renabap, fig.width=7, fig.height=7}
+# Entradas: RENABAP en formato tabla (CSV), comunas en formato mapa (BA Data)
+# y polígonos de barrios populares (RENABAP). Los mapas se descargan la primera vez.
+arch_renabap_csv <- "G:/Mi unidad/ITBA/TFI/datos/datos crudos - dengue/NACION/20231205_info_publica_datos_barrios.csv"
+ruta_mapas       <- "G:/Mi unidad/ITBA/TFI/datos/mapas"
+arch_comunas     <- file.path(ruta_mapas, "comunas.geojson")
+arch_renabap_sf  <- file.path(ruta_mapas, "renabap_20231205.geojson")
+
+url_comunas <- "https://data.buenosaires.gob.ar/dataset/comunas/resource/b0b627ac-5b47-4574-89ac-6999b63598ee/download"
+url_barrios <- "https://archivo.infraestructura.gob.ar/dataset/ssisu/20231205_info_publica.geojson"
+
+dir.create(ruta_mapas, showWarnings = FALSE, recursive = TRUE)
+bajar_geojson <- function(url, destino) {
+  # Una página HTML (por ejemplo "Request Rejected") no es un GeoJSON: se descarta
+  es_html <- function(f) file.exists(f) &&
+    grepl("^\\s*<", paste(readLines(f, n = 1, warn = FALSE, encoding = "UTF-8"), collapse = ""))
+  if (file.exists(destino) && es_html(destino)) file.remove(destino)
+  if (!file.exists(destino)) {
+    # El servidor rechaza el agente por defecto de R, así que se identifica como navegador
+    try(download.file(url, destino, mode = "wb", quiet = TRUE,
+                      headers = c("User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")),
+        silent = TRUE)
+    if (file.exists(destino) && es_html(destino)) file.remove(destino)
+  }
+  if (!file.exists(destino))
+    stop("No se pudo bajar el archivo desde:\n", url,
+         "\nDescargalo a mano desde el navegador y guardalo como:\n", destino)
+}
+bajar_geojson(url_comunas, arch_comunas)
+bajar_geojson(url_barrios, arch_renabap_sf)
+
+archivos <- c(arch_renabap_csv, arch_comunas, arch_renabap_sf)
+faltan   <- archivos[!file.exists(archivos)]
+if (length(faltan) > 0) {
+  stop("No se encuentran estos archivos:\n", paste(faltan, collapse = "\n"))
+}
+
+# Barrios populares de CABA por comuna (la columna departamento ya trae "Comuna 8", etc.)
+renabap_comuna <- read_csv(arch_renabap_csv, show_col_types = FALSE) %>%
+  filter(str_detect(provincia, "Ciudad")) %>%
+  group_by(departamento_nombre = departamento) %>%
+  summarise(barrios         = n(),
+            viviendas       = sum(cantidad_viviendas_aproximadas, na.rm = TRUE),
+            area_renabap_ha = sum(superficie_m2, na.rm = TRUE) / 1e4,
+            .groups = "drop")
+
+# Comunas en formato mapa, con la misma clave que la base de dengue ("Comuna 7")
+comunas_sf <- st_read(arch_comunas, quiet = TRUE) %>% st_make_valid()
+col_comuna <- names(comunas_sf)[str_detect(names(comunas_sf), regex("^comuna", ignore_case = TRUE))][1]
+if (is.na(col_comuna)) stop("No se encontro una columna de comuna en ", arch_comunas)
+
+comunas_sf <- comunas_sf %>%
+  mutate(comuna_num          = parse_number(as.character(.data[[col_comuna]])),
+         departamento_nombre = paste("Comuna", comuna_num)) %>%
+  # La columna "barrios" del archivo de BA Data choca con la de RENABAP: se conservan solo las necesarias
+  select(departamento_nombre, comuna_num)
+
+# Superficie de cada comuna en hectáreas (proyección UTM 21S)
+comunas_sf <- comunas_sf %>%
+  mutate(area_comuna_ha = as.numeric(st_area(st_transform(., 32721))) / 1e4)
+
+# Tasa acumulada (misma definición que comunas_top) y marca de las seis de mayor carga
+tasa_comuna <- comunas_conocidas %>%
+  group_by(departamento_nombre) %>%
+  summarise(tasa_total = sum(tasa_dengue_prom, na.rm = TRUE), .groups = "drop")
+
+comunas_sf <- comunas_sf %>%
+  left_join(tasa_comuna, by = "departamento_nombre") %>%
+  mutate(top6  = departamento_nombre %in% comunas_top$departamento_nombre,
+         grupo = if_else(top6, "Seis comunas con mayor carga acumulada", "Resto de las comunas"))
+
+if (any(is.na(comunas_sf$tasa_total))) {
+  warning("Hay comunas del mapa sin tasa de dengue: revisar los nombres de comuna.")
+}
+
+# Base por comuna: dengue y barrios populares
+base_comunas <- comunas_sf %>%
+  st_drop_geometry() %>%
+  left_join(renabap_comuna, by = "departamento_nombre") %>%
+  mutate(across(c(barrios, viviendas, area_renabap_ha), ~ replace_na(.x, 0)),
+         pct_renabap = 100 * area_renabap_ha / area_comuna_ha)
+
+# Polígonos de RENABAP que caen en CABA (solo para dibujar el mapa)
+renabap_caba <- st_read(arch_renabap_sf, quiet = TRUE) %>%
+  st_zm() %>%
+  st_make_valid() %>%
+  st_transform(st_crs(comunas_sf)) %>%
+  st_filter(st_union(comunas_sf), .predicate = st_intersects)
+
+ggplot() +
+  geom_sf(data = comunas_sf, aes(fill = grupo), color = "grey25", linewidth = 0.3) +
+  geom_sf(data = renabap_caba, aes(fill = "Barrios populares (RENABAP)"),
+          color = "#2c7fb8", linewidth = 0.2) +
+  geom_sf_text(data = comunas_sf, aes(label = comuna_num, color = top6),
+               fontface = "bold", size = 3.5, check_overlap = TRUE) +
+  scale_fill_manual(values = c("Seis comunas con mayor carga acumulada" = "#d7191c",
+                               "Resto de las comunas"                   = "#d9d9d9",
+                               "Barrios populares (RENABAP)"            = "#2c7fb8"),
+                    name = NULL) +
+  scale_color_manual(values = c("TRUE" = "white", "FALSE" = "grey15"), guide = "none") +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+# Tabla y porcentajes por comuna
+tabla_renabap <- base_comunas %>%
+  arrange(desc(tasa_total)) %>%
+  transmute(Comuna                    = comuna_num,
+            `Tasa acumulada`          = round(tasa_total, 1),
+            `Seis de mayor carga`     = if_else(top6, "Sí", "No"),
+            `Barrios RENABAP`         = barrios,
+            `Viviendas aprox.`        = viviendas,
+            `Superficie RENABAP (ha)` = round(area_renabap_ha, 1),
+            `% de la comuna`          = round(pct_renabap, 1))
+tabla_word(tabla_renabap, caption = "Tasa acumulada de dengue y barrios populares (RENABAP) por comuna")
+
+pct_sup_top6  <- 100 * sum(base_comunas$area_renabap_ha[base_comunas$top6]) / sum(base_comunas$area_renabap_ha)
+pct_viv_top6  <- 100 * sum(base_comunas$viviendas[base_comunas$top6])       / sum(base_comunas$viviendas)
+pct_sup_4y8   <- 100 * sum(base_comunas$area_renabap_ha[base_comunas$comuna_num %in% c(4, 8)]) / sum(base_comunas$area_renabap_ha)
+rho <- suppressWarnings(cor.test(base_comunas$tasa_total, base_comunas$pct_renabap, method = "spearman"))
+
+cat(sprintf("Barrios populares dentro de las seis comunas de mayor carga: %.1f%% de la superficie y %.1f%% de las viviendas\n", pct_sup_top6, pct_viv_top6))
+cat(sprintf("Comunas 4 y 8: %.1f%% de la superficie de barrios populares de la Ciudad\n", pct_sup_4y8))
+cat(sprintf("Spearman entre tasa acumulada y %% de superficie RENABAP por comuna (n = %d): rho = %.2f, p = %.3f\n",
+            nrow(base_comunas), unname(rho$estimate), rho$p.value))
+```
+
+
+---
+
+# Análisis de rezagos (lag)
+
+Se calcula la correlación entre la tasa de dengue de CABA y cada variable climática rezagada de 1 a 8 semanas, para definir la ventana del modelo predictivo.
+
+```{r analisis_rezagos}
+# Datos CABA total para el análisis de rezago: serie semanal completa (393 semanas).
+# Las semanas sin casos notificados se completan con 0 y se les asigna su clima, para que
+# lag() corra semanas y no filas (es la misma serie que usa el DLNM)
+caba_lag <- dengue_clima_agrup %>%
+  filter(provincia_nombre == "Caba") %>%
+  mutate(fecha_iso = as.Date(fecha_iso)) %>%
+  select(fecha_iso, tasa_dengue_prom) %>%
+  as_tsibble(index = fecha_iso) %>%
+  fill_gaps(tasa_dengue_prom = 0) %>%
+  as_tibble() %>%
+  mutate(iso_str    = ISOweek::ISOweek(fecha_iso),
+         anio_iso   = as.integer(substr(iso_str, 1, 4)),
+         semana_iso = as.integer(substr(iso_str, 7, 8))) %>%
+  left_join(clima_iso_caba, by = c("anio_iso", "semana_iso")) %>%
+  rename(temp_prom = temperatura_celsius,
+         hum_prom  = humedad_porcentaje,
+         prec_prom = precipitacion_mm) %>%
+  select(-iso_str, -anio_iso, -semana_iso)
+
+# Calcular correlaciones con rezagos de 1 a 8 semanas
+calcular_cor_lag <- function(data, var_clima, max_lag = 8) {
+  map_dfr(1:max_lag, function(lag) {
+    cor_val <- cor(
+      data$tasa_dengue_prom,
+      lag(data[[var_clima]], lag),
+      use = "complete.obs"
+    )
+    tibble(lag_semanas = lag, variable = var_clima, correlacion = cor_val)
+  })
+}
+
+rezagos <- bind_rows(
+  calcular_cor_lag(caba_lag, "temp_prom"),
+  calcular_cor_lag(caba_lag, "hum_prom"),
+  calcular_cor_lag(caba_lag, "prec_prom")
+) %>%
+  mutate(variable = recode(variable,
+    "temp_prom"  = "Temperatura",
+    "hum_prom"   = "Humedad",
+    "prec_prom"  = "Precipitación"
+  ))
+
+ggplot(rezagos, aes(x = lag_semanas, y = correlacion, color = variable, group = variable)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_x_continuous(breaks = 1:8) +
+  scale_color_manual(values = c(
+    "Temperatura"  = "orange",
+    "Humedad"      = "blue",
+    "Precipitación" = "darkgreen"
+  )) +
+  labs(
+    x        = "Semanas de rezago",
+    y        = "Correlación de Pearson",
+    color    = "Variable"
+  ) +
+  theme_minimal()
+```
+
+```{r tabla_rezagos}
+rezagos %>%
+  pivot_wider(names_from = variable, values_from = correlacion) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  tabla_word("Correlación por rezago (semanas)")
+```
+
+## CCF formal con feasts
+
+La función de correlación cruzada (CCF) complementa el análisis anterior: incluye intervalos de confianza y permite ver rezagos en ambas direcciones (adelanto y retraso).
+
+```{r ccf_formal}
+# tsibble para la CCF; fill_gaps() vuelve explícitas las semanas faltantes (lo pide feasts)
+caba_tsibble <- caba_lag %>%
+  mutate(fecha_iso = as.Date(fecha_iso)) %>%
+  as_tsibble(index = fecha_iso) %>%
+  fill_gaps()
+
+# CCF: temperatura vs dengue
+ccf_temp <- caba_tsibble %>%
+  CCF(tasa_dengue_prom, temp_prom, lag_max = 12) %>%
+  autoplot() +
+  labs(
+    x        = "Rezago (semanas)",
+    y        = "Correlación"
+  ) +
+  theme_minimal()
+
+# CCF: humedad vs dengue
+ccf_hum <- caba_tsibble %>%
+  CCF(tasa_dengue_prom, hum_prom, lag_max = 12) %>%
+  autoplot() +
+  labs(
+    x        = "Rezago (semanas)",
+    y        = "Correlación"
+  ) +
+  theme_minimal()
+
+# CCF: precipitación vs dengue
+ccf_prec <- caba_tsibble %>%
+  CCF(tasa_dengue_prom, prec_prom, lag_max = 12) %>%
+  autoplot() +
+  labs(
+    x        = "Rezago (semanas)",
+    y        = "Correlación"
+  ) +
+  theme_minimal()
+
+ccf_temp
+ccf_hum
+ccf_prec
+```
+
+---
+
+# Resumen descriptivo
+
+```{r resumen_descriptivo}
+resumen <- dengue_clima_caba %>%
+  summarise(
+    `Semanas con datos`            = as.character(n_distinct(fecha_iso)),
+    `Años cubiertos`               = paste(min(anio, na.rm=TRUE), "–", max(anio, na.rm=TRUE)),
+    `Total casos (suma tasas)`     = as.character(round(sum(tasa_dengue, na.rm = TRUE), 1)),
+    `Temp. promedio (°C)`          = as.character(round(mean(temperatura_celsius, na.rm = TRUE), 1)),
+    `Humedad promedio (%)`         = as.character(round(mean(humedad_porcentaje, na.rm = TRUE), 1)),
+    `Precipitación promedio (mm)`  = as.character(round(mean(precipitacion_mm, na.rm = TRUE), 1))
+  ) %>%
+  pivot_longer(everything(), names_to = "Indicador", values_to = "Valor")
+
+resumen %>%
+  tabla_word("Resumen general del dataset CABA")
+```
+
+---
+
+# Análisis por grupo etario
+
+Se analiza la carga acumulada y la evolución temporal por franja etaria (`grupo_edad_desc`).
+
+```{r etario_distribucion}
+# Edad mínima de cada franja, para ordenar el eje por edad ("Menores de 1 año" vale 0)
+extraer_edad_min <- function(x) {
+  numero <- as.numeric(str_extract(x, "\\d+"))
+  case_when(
+    str_detect(x, regex("menores de 1", ignore_case = TRUE)) ~ 0,
+    TRUE ~ numero
+  )
+}
+
+# No se desagrega por sexo porque ninguno de los archivos de origen trae esa columna.
+# El eje se ordena con arrange() y factor(levels = ...) sobre un vector character,
+# para evitar niveles vacíos de factor.
+dengue_clima_caba %>%
+  filter(!is.na(grupo_edad_desc),
+         grupo_edad_desc != "Desconocida",
+         grupo_edad_desc != "(En Blanco)") %>%
+  mutate(grupo_edad_desc = as.character(grupo_edad_desc)) %>%
+  group_by(grupo_edad_desc) %>%
+  summarise(tasa_total = sum(tasa_dengue, na.rm = TRUE), .groups = "drop") %>%
+  arrange(extraer_edad_min(grupo_edad_desc)) %>%
+  mutate(grupo_edad_desc = factor(grupo_edad_desc, levels = grupo_edad_desc)) %>%
+  ggplot(aes(x = grupo_edad_desc, y = tasa_total)) +
+  geom_col(fill = "#2c7fb8", alpha = 0.85) +
+  labs(
+    x     = "Grupo etario",
+    y     = "Suma de tasas (x 100.000 hab)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r etario_temporal}
+# Evolución temporal de los 4 grupos con mayor carga acumulada
+top_grupos <- dengue_clima_caba %>%
+  filter(!is.na(grupo_edad_desc),
+         grupo_edad_desc != "Desconocida",
+         grupo_edad_desc != "(En Blanco)") %>%
+  group_by(grupo_edad_desc) %>%
+  summarise(tasa_total = sum(tasa_dengue, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(tasa_total)) %>%
+  slice_head(n = 4) %>%
+  pull(grupo_edad_desc)
+
+dengue_clima_caba %>%
+  filter(grupo_edad_desc %in% top_grupos) %>%
+  group_by(grupo_edad_desc, fecha_iso) %>%
+  summarise(tasa_prom = mean(tasa_dengue, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = as.Date(fecha_iso), y = tasa_prom, color = grupo_edad_desc)) +
+  geom_line(linewidth = 0.9) +
+  labs(
+    x      = "Fecha",
+    y      = "Tasa promedio (x 100.000 hab)",
+    color  = "Grupo etario"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# Comparación interanual de brotes
+
+Se superponen las curvas epidémicas de cada año en un mismo eje de semanas epidemiológicas, para comparar la magnitud relativa de los brotes.
+
+```{r curvas_interanuales}
+dengue_clima_caba %>%
+  mutate(anio = as.factor(anio)) %>%
+  group_by(anio, semanas_epidemiologicas) %>%
+  summarise(tasa_sem = sum(tasa_dengue, na.rm = TRUE), .groups = "drop") %>%
+  filter(!is.na(semanas_epidemiologicas)) %>%
+  ggplot(aes(x = semanas_epidemiologicas, y = tasa_sem,
+             color = anio, group = anio)) +
+  geom_line(linewidth = 0.9, alpha = 0.8) +
+  scale_color_viridis_d(option = "turbo") +
+  scale_x_continuous(breaks = seq(1, 52, by = 4)) +
+  labs(
+    x        = "Semana epidemiológica",
+    y        = "Tasa acumulada semanal (x 100.000 hab)",
+    color    = "Año"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+```{r pico_por_anio}
+# Tabla: semana pico y tasa máxima por año
+dengue_clima_caba %>%
+  group_by(anio, semanas_epidemiologicas) %>%
+  summarise(tasa_sem = sum(tasa_dengue, na.rm = TRUE), .groups = "drop") %>%
+  group_by(anio) %>%
+  slice_max(tasa_sem, n = 1) %>%
+  rename(
+    `Año`                    = anio,
+    `Semana pico`            = semanas_epidemiologicas,
+    `Tasa máxima (x100k)`   = tasa_sem
+  ) %>%
+  mutate(`Tasa máxima (x100k)` = round(`Tasa máxima (x100k)`, 2)) %>%
+  tabla_word("Semana y tasa pico por año epidemiológico, CABA")
+```
+
+---
+
+# Test de estacionariedad
+
+Antes de ajustar modelos ARIMA se verifica si la serie requiere diferenciación con los tests ADF (Augmented Dickey-Fuller) y KPSS, que tienen hipótesis nulas opuestas y se complementan.
+
+```{r serie_para_tests}
+# Serie semanal CABA total (misma base que el forecast)
+caba_serie_vec <- dengue_clima_agrup %>%
+  filter(provincia_nombre == "Caba") %>%
+  arrange(fecha_iso) %>%
+  pull(tasa_dengue_prom) %>%
+  replace_na(0)   # las semanas sin dato se toman como 0 para los tests
+```
+
+```{r test_adf, results='hide'}
+# ADF: H0 = la serie tiene raíz unitaria (no estacionaria); rechazar H0 implica serie estacionaria
+adf_resultado <- ur.df(caba_serie_vec, type = "drift", selectlags = "AIC")
+summary(adf_resultado)
+```
+
+```{r test_kpss, results='hide'}
+# KPSS: H0 = la serie es estacionaria; rechazar H0 implica serie no estacionaria
+kpss_resultado <- ur.kpss(caba_serie_vec, type = "mu")
+summary(kpss_resultado)
+```
+
+```{r interpretacion_tests}
+tibble(
+  Test    = c("ADF (Dickey-Fuller aumentado)", "KPSS"),
+  `H0`    = c("Tiene raíz unitaria (no estacionaria)", "Es estacionaria"),
+  `Rechazar H0 implica` = c("Serie estacionaria", "Serie NO estacionaria"),
+  `Uso en ARIMA` = c("Confirma d=0 si se rechaza", "Confirma d≥1 si se rechaza")
+) %>%
+  tabla_word("Resumen interpretación tests de estacionariedad")
+```
+
+---
+
+# Forecast de casos de dengue
+
+Se ajustan modelos de series temporales para proyectar la tasa de dengue en CABA a corto plazo. El objetivo es explorar la estructura temporal de la serie y contar con una línea de base (*baseline*) para comparar con el modelo predictivo que incorpora variables climáticas.
+
+## Preparación de la serie temporal
+
+```{r forecast_serie}
+# Serie temporal semanal de CABA (tasa total)
+serie_caba <- dengue_clima_agrup %>%
+  filter(provincia_nombre == "Caba") %>%
+  arrange(fecha_iso) %>%
+  select(fecha_iso, tasa_dengue_prom) %>%
+  mutate(fecha_iso = as.Date(fecha_iso))
+
+# Secuencia completa de semanas, con 0 donde no hubo registros
+semanas_completas <- tibble(
+  fecha_iso = seq(min(serie_caba$fecha_iso), max(serie_caba$fecha_iso), by = "week")
+)
+
+serie_completa <- semanas_completas %>%
+  left_join(serie_caba, by = "fecha_iso") %>%
+  mutate(tasa_dengue_prom = replace_na(tasa_dengue_prom, 0))
+
+# ts con frecuencia 52 (semanas por año), para el paquete forecast
+serie_ts_base <- ts(serie_completa$tasa_dengue_prom, frequency = 52)
+
+# tsibble para los modelos de fable
+serie_ts <- serie_completa %>%
+  as_tsibble(index = fecha_iso)
+
+cat("Período cubierto:", format(min(serie_completa$fecha_iso)), "a", format(max(serie_completa$fecha_iso)), "\n")
+cat("Semanas totales:", nrow(serie_completa), "\n")
+```
+
+## Descomposición STL
+
+STL (Seasonal-Trend decomposition using Loess) separa la tendencia, la estacionalidad anual y el residuo de la serie.
+
+```{r stl_decomposicion}
+# STL con ajuste robusto
+stl_fit <- stl(serie_ts_base, s.window = "periodic", robust = TRUE)
+
+autoplot(stl_fit) +
+  theme_minimal()
+```
+
+```{r estacionalidad_stl}
+# Componente estacional promedio por semana ISO del año
+stl_componentes <- as_tibble(stl_fit$time.series) %>%
+  mutate(fecha_iso = serie_completa$fecha_iso,
+         semana    = isoweek(fecha_iso)) %>%
+  group_by(semana) %>%
+  summarise(efecto_estacional = mean(seasonal, na.rm = TRUE), .groups = "drop")
+
+ggplot(stl_componentes, aes(x = semana, y = efecto_estacional)) +
+  geom_col(aes(fill = efecto_estacional), show.legend = FALSE) +
+  scale_fill_gradient2(low = "steelblue", high = "firebrick", mid = "white", midpoint = 0) +
+  coord_polar(start = 0) +
+  labs(
+    x        = "Semana del año",
+    y        = "Efecto estacional (STL)"
+  ) +
+  theme_minimal()
+```
+
+## Modelos de forecast
+
+Se ajustan tres modelos de referencia (*baseline*):
+
+| Modelo | Descripción |
+|--------|-------------|
+| **ETS** | Suavizado exponencial con componente estacional |
+| **ARIMA** | Modelo autoregresivo integrado de media móvil (auto-selección) |
+| **SNAIVE** | Naive estacional: repite el valor de la misma semana del año anterior |
+
+```{r ajuste_modelos}
+# Horizonte de predicción: 12 semanas
+H <- 12
+
+modelos_fit <- serie_ts %>%
+  model(
+    ETS    = ETS(tasa_dengue_prom),
+    ARIMA  = ARIMA(tasa_dengue_prom),
+    SNAIVE = SNAIVE(tasa_dengue_prom ~ lag("year"))
+  )
+
+# Forecast
+fc <- modelos_fit %>%
+  forecast(h = H)
+
+# Comparación de los tres modelos
+fc %>%
+  autoplot(serie_ts %>% tail(104), level = 80) +   # muestra las últimas 2 temporadas
+  facet_wrap(~ .model, ncol = 1) +
+  labs(
+    x        = "Fecha",
+    y        = "Tasa proyectada (x 100.000 hab)"
+  ) +
+  theme_minimal()
+```
+
+## Evaluación de los modelos (accuracy)
+
+```{r accuracy_modelos}
+# Validación temporal: 80% de entrenamiento y 20% final de prueba
+n_total <- nrow(serie_ts)
+n_train  <- floor(n_total * 0.8)
+
+serie_train <- serie_ts %>% slice(1:n_train)
+serie_test  <- serie_ts %>% slice((n_train + 1):n_total)
+
+n_test <- nrow(serie_test)
+
+modelos_train <- serie_train %>%
+  model(
+    ETS    = ETS(tasa_dengue_prom),
+    ARIMA  = ARIMA(tasa_dengue_prom),
+    SNAIVE = SNAIVE(tasa_dengue_prom ~ lag("year"))
+  )
+
+fc_test <- modelos_train %>%
+  forecast(h = n_test)
+
+# Se calcula una sola vez y se reutiliza más abajo (accuracy() existe en forecast y en fabletools)
+acc_accuracy <- accuracy(fc_test, serie_ts) %>%
+  select(.model, RMSE, MAE, MAPE, MASE) %>%
+  arrange(RMSE)
+
+acc_accuracy %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  rename(Modelo = .model) %>%
+  tabla_word("Métricas de accuracy: validación temporal (20% final de la serie)")
+```
+
+```{r grafico_accuracy}
+# Predicción y valores reales en el período de prueba
+fc_test %>%
+  filter(.model != "SNAIVE") %>%
+  autoplot(serie_ts, level = 80) +
+  autolayer(serie_test, tasa_dengue_prom, color = "black", linewidth = 1) +
+  facet_wrap(~ .model, ncol = 1) +
+  labs(
+    x        = "Fecha",
+    y        = "Tasa (x 100.000 hab)"
+  ) +
+  theme_minimal()
+```
+
+## Tabla de valores proyectados
+
+```{r tabla_forecast}
+fc %>%
+  as_tibble() %>%
+  select(fecha_iso, .model, .mean) %>%
+  pivot_wider(names_from = .model, values_from = .mean) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  rename(Semana = fecha_iso) %>%
+  tabla_word(paste0("Tasa proyectada por semana: próximas ", H, " semanas"))
+```
+
+## Modelo de referencia
+
+```{r interpretacion}
+# Mejor modelo según RMSE (tabla del chunk anterior)
+acc <- acc_accuracy
+mejor_modelo <- acc$.model[1]
+rmse_mejor   <- round(acc$RMSE[1], 3)
+
+cat("Mejor modelo baseline:", mejor_modelo, "\n")
+cat("RMSE:", rmse_mejor, "(tasa x 100.000 hab)\n")
+```
+
+---
+
+# Modelo DLNM (Distributed Lag Non-linear Model)
+
+Se combinan temperatura y humedad en un único índice de calor compuesto, porque la hipótesis de trabajo es que el efecto conjunto de temperatura y humedad elevadas pesa más que el de cada variable por separado. La precipitación se modela con su propio crossbasis. Se usa el paquete `dlnm` (Gasparrini).
+
+```{r dlnm_librerias}
+library(dlnm)
+
+# Histograma de una variable; con bandas = TRUE marca los percentiles 2,5% y 97,5%
+histograma <- function(datos, variable, etiqueta_x, color = "steelblue", bins = 30, bandas = FALSE) {
+  g <- ggplot(datos, aes(x = {{ variable }})) +
+    geom_histogram(bins = bins, fill = color, color = "white") +
+    labs(x = etiqueta_x, y = "Frecuencia (semanas)") +
+    theme_minimal()
+  if (bandas) {
+    percentiles <- datos %>%
+      pull({{ variable }}) %>%
+      quantile(c(0.025, 0.975), na.rm = TRUE)
+    g <- g +
+      geom_vline(data = tibble(valor = percentiles),
+                 aes(xintercept = valor, linetype = "Percentiles 2,5% y 97,5%"),
+                 color = "red", linewidth = 0.8) +
+      scale_linetype_manual(values = "dashed", name = NULL) +
+      theme(legend.position = "top")
+  }
+  g
+}
+
+# Varianza explicada por cada componente de un PCA
+grafico_varianza <- function(pca, color = "steelblue") {
+  componentes <- paste0("PC", seq_along(pca$sdev))
+  tibble(componente = factor(componentes, levels = componentes),
+         varianza   = pca$sdev^2 / sum(pca$sdev^2)) %>%
+    ggplot(aes(x = componente, y = varianza)) +
+    geom_col(fill = color) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = NULL, y = "Proporción de varianza explicada") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Preparación de la serie e índice de calor compuesto
+
+```{r dlnm_prep}
+# Se agregan los casos confirmados crudos (cantidad_casos) por semana, que es
+# la variable de conteo apropiada para un GLM quasipoisson (en las secciones
+# anteriores se usó la tasa)
+caba_casos_semanales <- dengue_clima_caba %>%
+  filter(provincia_nombre == "Caba") %>%
+  group_by(fecha_iso) %>%
+  summarise(casos_dengue = sum(cantidad_casos, na.rm = TRUE), .groups = "drop") %>%
+  mutate(fecha_iso = as.Date(fecha_iso)) %>%
+  arrange(fecha_iso)
+
+# fill_gaps() deja una fila por semana: el crossbasis necesita intervalos regulares para calcular los rezagos
+dlnm_data <- caba_casos_semanales %>%
+  as_tsibble(index = fecha_iso) %>%
+  fill_gaps() %>%
+  as_tibble() %>%
+  # Las semanas sin registros son semanas con 0 casos
+  mutate(casos_dengue = replace_na(casos_dengue, 0))
+
+# El clima se une por año y semana ISO, calculadas igual en las dos bases
+iso_str_dengue <- ISOweek::ISOweek(dlnm_data$fecha_iso)
+
+clima_iso <- base_datos_clima %>%
+  mutate(
+    iso_str    = ISOweek::ISOweek(fecha_semana),
+    anio_iso   = as.integer(substr(iso_str, 1, 4)),
+    semana_iso = as.integer(substr(iso_str, 7, 8))
+  ) %>%
+  # Una fila por (año, semana ISO), para que el join no duplique filas de dlnm_data
+  group_by(anio_iso, semana_iso) %>%
+  summarise(
+    precipitacion_mm    = mean(precipitacion_mm,    na.rm = TRUE),
+    humedad_porcentaje  = mean(humedad_porcentaje,  na.rm = TRUE),
+    temperatura_celsius = mean(temperatura_celsius, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+dlnm_data <- dlnm_data %>%
+  mutate(
+    anio_iso   = as.integer(substr(iso_str_dengue, 1, 4)),
+    semana_iso = as.integer(substr(iso_str_dengue, 7, 8))
+  ) %>%
+  left_join(clima_iso, by = c("anio_iso", "semana_iso")) %>%
+  rename(
+    prec_prom = precipitacion_mm,
+    hum_prom  = humedad_porcentaje,
+    temp_prom = temperatura_celsius
+  ) %>%
+  select(-anio_iso, -semana_iso)
+
+# Índice de calor compuesto (aproximación del humidex)
+dlnm_data <- dlnm_data %>%
+  mutate(
+    indice_calor = temp_prom +
+      0.5555 * (6.11 * exp(5417.7530 * (1/273.16 - 1/(273.15 + temp_prom))) *
+                (hum_prom / 100) - 10)
+  )
+
+# Cobertura de clima
+cat("Semanas con clima válido:", sum(!is.na(dlnm_data$indice_calor)),
+    "de", nrow(dlnm_data), "\n")
+
+# Control: el índice debería tener un rango plausible para CABA (aprox. -5 a 45)
+cat("Rango del índice de calor:", round(range(dlnm_data$indice_calor, na.rm = TRUE), 1), "\n")
+if (any(!is.finite(dlnm_data$indice_calor[!is.na(dlnm_data$indice_calor)]))) {
+  warning("Hay valores no finitos (Inf/-Inf) en indice_calor: revisar el join de clima.")
+}
+
+dlnm_data %>%
+  select(fecha_iso, casos_dengue, temp_prom, hum_prom, indice_calor) %>%
+  head(5) %>%
+  tabla_word("Primeras filas: casos crudos e índice de calor compuesto")
+```
+
+## Construcción del crossbasis
+
+```{r dlnm_crossbasis}
+# Crossbasis del índice de calor: spline natural en el nivel (argvar) y en el rezago (arglag).
+# Se usa rezago máximo de 6 semanas, df = 3 en el nivel y df = 2 en el rezago: con df = 4 y
+# rezago 8 el modelo se volvía inestable (semanas de invierno con pocos casos y valores
+# predichos casi nulos, dispersión de orden 1e14 e intervalos de confianza no finitos).
+cb_calor <- crossbasis(
+  dlnm_data$indice_calor,
+  lag    = 6,
+  argvar = list(fun = "ns", df = 3),
+  arglag = list(fun = "ns", df = 2)
+)
+
+# Crossbasis de precipitación: rezago máximo de 6 semanas y menos grados de libertad (efecto de más corto plazo, según la tabla de rezagos)
+cb_prec <- crossbasis(
+  dlnm_data$prec_prom,
+  lag    = 6,
+  argvar = list(fun = "ns", df = 3),
+  arglag = list(fun = "ns", df = 3)
+)
+```
+
+## Ajuste del modelo
+
+```{r dlnm_modelo, results='hide'}
+# Modelo quasipoisson (conteos con sobredispersión). Se modelan los casos
+# semanales sin offset de población porque es una única área (CABA) a lo largo
+# del tiempo; el offset haría falta para comparar comunas con poblaciones distintas.
+modelo_dlnm <- glm(
+  casos_dengue ~ cb_calor + cb_prec,
+  family = quasipoisson(),
+  data   = dlnm_data
+)
+
+summary(modelo_dlnm)
+```
+
+## Diagnóstico previo: ¿hay datos suficientes en todo el rango del índice?
+
+```{r dlnm_diagnostico_datos}
+# Distribución del índice de calor y percentiles 2,5% y 97,5%
+histograma(dlnm_data, indice_calor, "Índice de calor", bandas = TRUE)
+
+# Observaciones en la zona fría (índice de calor < 15)
+n_zona_fria <- sum(dlnm_data$indice_calor < 15, na.rm = TRUE)
+n_total     <- sum(!is.na(dlnm_data$indice_calor))
+
+cat("Observaciones con índice de calor < 15:", n_zona_fria,
+    "de", n_total, "totales (", round(100 * n_zona_fria / n_total, 1), "%)\n")
+```
+
+## Predicción y visualización de la superficie (rango restringido)
+
+```{r dlnm_crosspred}
+# Valor de referencia: mediana del índice observado
+valor_ref <- median(dlnm_data$indice_calor, na.rm = TRUE)
+
+# El rango de predicción se restringe al 2,5-97,5% de los datos observados, para no extrapolar donde hay pocos datos
+rango_valido <- quantile(dlnm_data$indice_calor, c(0.025, 0.975), na.rm = TRUE)
+secuencia_pred <- seq(rango_valido[1], rango_valido[2], length.out = 50)
+
+pred_calor <- crosspred(cb_calor, modelo_dlnm, cen = valor_ref, at = secuencia_pred)
+
+# Superficie 3D: riesgo relativo según nivel del índice de calor × semanas de rezago
+plot(pred_calor,
+     xlab  = "Índice de calor",
+     ylab  = "Rezago (semanas)",
+     zlab  = "RR",
+     theta = 200, phi = 30,
+     main = "")
+```
+
+## Diagnóstico complementario: ancho del intervalo de confianza
+
+```{r dlnm_ci_ancho}
+# Ancho del intervalo de confianza en la zona fría (con pocos datos) y en la templada, con el rezago fijo en 5 semanas
+pred_diagnostico <- crosspred(cb_calor, modelo_dlnm, cen = valor_ref,
+                               at = c(11, 20, 28), lag = 5)
+
+tibble(
+  `Índice de calor` = c(11, 20, 28),
+  `RR estimado`     = round(pred_diagnostico$allRRfit, 2),
+  `IC 95% inferior`  = round(pred_diagnostico$allRRlow, 2),
+  `IC 95% superior`  = round(pred_diagnostico$allRRhigh, 2)
+) %>%
+  tabla_word("Ancho del intervalo de confianza, rezago fijo en 5 semanas")
+```
+
+## Cortes de la superficie: exposición y rezago
+
+```{r dlnm_slice_lag}
+# Curva de rezago para un nivel alto del índice (percentil 90). Se toma el punto
+# más cercano de la grilla de pred_calor para quedar dentro del rango con datos.
+percentil_90    <- quantile(dlnm_data$indice_calor, 0.90, na.rm = TRUE)
+var_mas_cercano <- secuencia_pred[which.min(abs(secuencia_pred - percentil_90))]
+
+plot(pred_calor, "slices", var = var_mas_cercano,
+     xlab = "Rezago (semanas)", ylab = "RR",
+     main = "")
+```
+
+```{r dlnm_slice_var}
+# Curva de exposición para el rezago 4
+plot(pred_calor, "slices", lag = 4,
+     xlab = "Índice de calor", ylab = "RR",
+     main = "")
+```
+
+```{r dlnm_diagnostico_modelo}
+# Diagnóstico del ajuste: una dispersión de miles o más, o valores predichos casi nulos, indican inestabilidad
+cat("Dispersión del modelo (Humidex):", round(summary(modelo_dlnm)$dispersion, 1), "\n")
+cat("Valor predicho mínimo:", signif(min(fitted(modelo_dlnm)), 3), "\n")
+cat("Rango de los coeficientes:", round(range(coef(modelo_dlnm)), 1), "\n")
+
+# RR e IC 95% por rezago, con el índice de calor cercano al percentil 90
+fila <- which(pred_calor$predvar == var_mas_cercano)
+tibble(
+  Rezago            = as.numeric(colnames(pred_calor$matRRfit)),
+  RR                = round(pred_calor$matRRfit[fila, ], 2),
+  `IC 95% inferior` = round(pred_calor$matRRlow[fila, ], 2),
+  `IC 95% superior` = round(pred_calor$matRRhigh[fila, ], 2)
+) %>%
+  tabla_word(paste0("RR por rezago con índice de calor = ", round(var_mas_cercano, 1), " (percentil 90)"))
+
+# RR máximo de toda la superficie y dónde está
+m_calor <- pred_calor$matRRfit
+idx_max <- which(m_calor == max(m_calor), arr.ind = TRUE)[1, ]
+cat("RR máximo:", round(max(m_calor), 2),
+    "| índice de calor:", round(as.numeric(rownames(m_calor)[idx_max[1]]), 1),
+    "| rezago:", colnames(m_calor)[idx_max[2]], "\n")
+```
+
+---
+
+# Componentes principales (PCA) de variables climáticas
+
+## PCA sin rezago (variables climáticas crudas)
+
+```{r pca_sin_rezago_prep}
+# Se usa dlnm_data, que ya tiene el clima unido para toda la serie
+pca_datos_base <- dlnm_data %>%
+  select(fecha_iso, temp_prom, hum_prom, prec_prom) %>%
+  filter(complete.cases(.))
+
+cat("Semanas usadas para el PCA:", nrow(pca_datos_base), "de", nrow(dlnm_data), "\n")
+
+# PCA con variables estandarizadas (scale. = TRUE): temperatura, humedad y precipitación tienen escalas distintas (°C, %, mm)
+pca_sin_rezago <- prcomp(
+  pca_datos_base %>% select(temp_prom, hum_prom, prec_prom),
+  scale. = TRUE
+)
+
+summary(pca_sin_rezago)
+```
+
+```{r pca_sin_rezago_cargas}
+# Cargas de cada variable en cada componente
+as_tibble(pca_sin_rezago$rotation, rownames = "variable") %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  tabla_word("Cargas de las variables climáticas en cada componente")
+```
+
+```{r pca_sin_rezago_grafico}
+# Biplot: semanas (puntos) y cargas de las variables (flechas) en PC1 y PC2
+scores_pc <- as_tibble(pca_sin_rezago$x[, 1:2])
+cargas_pc <- as_tibble(pca_sin_rezago$rotation[, 1:2], rownames = "variable") %>%
+  mutate(variable = recode(variable,
+    "temp_prom" = "Temperatura",
+    "hum_prom"  = "Humedad",
+    "prec_prom" = "Precipitación"
+  ))
+escala  <- 0.8 * max(abs(scores_pc$PC1), abs(scores_pc$PC2)) / max(abs(cargas_pc$PC1), abs(cargas_pc$PC2))
+var_pc  <- pca_sin_rezago$sdev^2 / sum(pca_sin_rezago$sdev^2)
+
+ggplot() +
+  geom_point(data = scores_pc, aes(x = PC1, y = PC2), color = "grey60", alpha = 0.5, size = 1) +
+  geom_segment(data = cargas_pc,
+               aes(x = 0, y = 0, xend = PC1 * escala, yend = PC2 * escala),
+               arrow = arrow(length = unit(0.2, "cm")), color = "#d7191c") +
+  geom_text_repel(data = cargas_pc,
+                  aes(x = PC1 * escala, y = PC2 * escala, label = variable),
+                  color = "#d7191c") +
+  labs(x = paste0("PC1 (", round(100 * var_pc[1], 1), "%)"),
+       y = paste0("PC2 (", round(100 * var_pc[2], 1), "%)")) +
+  theme_minimal()
+```
+
+Base semanal de CABA con las tres variables climáticas sin rezagar y los casos de dengue como referencia (la misma tabla del PCA de esta sección).
+
+```{r base_clima_sin_rezago}
+base_clima_caba_sin_rezago <- dlnm_data %>%
+  select(fecha_iso, casos_dengue, temp_prom, hum_prom, prec_prom) %>%
+  filter(complete.cases(.))
+
+cat("Filas:", nrow(base_clima_caba_sin_rezago), "\n")
+
+base_clima_caba_sin_rezago %>%
+  head(5) %>%
+  tabla_word("Primeras filas: dengue CABA y clima sin rezago")
+```
+
+```{r exportar_base_clima_sin_rezago, eval=FALSE}
+writexl::write_xlsx(base_clima_caba_sin_rezago,
+                    "G:/Mi unidad/ITBA/TFI/datos/base_clima_caba_sin_rezago.xlsx")
+```
+
+## Base climática de CABA con rezagos
+
+Para cada semana se arma el clima crudo y sus versiones rezagadas de 1 a 8 semanas (24 columnas: 3 variables por 8 rezagos), junto con los casos de dengue como referencia. Es el insumo del PCA con rezagos.
+
+```{r base_clima_rezagos}
+# Rezagos de 1 a 8 semanas de cada variable climática
+rezagos_1_a_8 <- list(lag1 = ~ lag(.x, 1), lag2 = ~ lag(.x, 2), lag3 = ~ lag(.x, 3), lag4 = ~ lag(.x, 4),
+                      lag5 = ~ lag(.x, 5), lag6 = ~ lag(.x, 6), lag7 = ~ lag(.x, 7), lag8 = ~ lag(.x, 8))
+
+base_clima_caba_rezagos <- dlnm_data %>%
+  select(fecha_iso, casos_dengue, temp_prom, hum_prom, prec_prom) %>%
+  arrange(fecha_iso) %>%
+  mutate(across(c(temp_prom, hum_prom, prec_prom), rezagos_1_a_8, .names = "{.col}_{.fn}")) %>%
+  rename_with(~ str_replace(.x, "_prom_lag", "_lag"))   # temp_prom_lag1 -> temp_lag1
+
+cat("Filas:", nrow(base_clima_caba_rezagos),
+    "| Columnas:", ncol(base_clima_caba_rezagos),
+    "| Filas completas (sin NA por los primeros 8 rezagos):",
+    sum(complete.cases(base_clima_caba_rezagos)), "\n")
+
+base_clima_caba_rezagos %>%
+  head(5) %>%
+  select(1:8) %>%
+  tabla_word("Primeras filas: base climática con rezagos (vista parcial, primeras 8 columnas)")
+```
+
+```{r exportar_base_clima_rezagos, eval=FALSE}
+writexl::write_xlsx(base_clima_caba_rezagos,
+                    "G:/Mi unidad/ITBA/TFI/datos/base_clima_caba_con_rezagos.xlsx")
+```
+
+## PCA con variables rezagadas
+
+```{r pca_con_rezago_prep}
+# Solo las 24 columnas rezagadas y las filas completas (las primeras 8 semanas se pierden por los rezagos)
+pca_datos_rezago <- base_clima_caba_rezagos %>%
+  select(starts_with("temp_lag"), starts_with("hum_lag"), starts_with("prec_lag")) %>%
+  filter(complete.cases(.))
+
+cat("Semanas usadas para el PCA con rezagos:", nrow(pca_datos_rezago),
+    "de", nrow(base_clima_caba_rezagos), "\n")
+
+pca_con_rezago <- prcomp(pca_datos_rezago, scale. = TRUE)
+
+summary(pca_con_rezago)
+```
+
+```{r pca_con_rezago_grafico}
+# Varianza explicada por componente
+grafico_varianza(pca_con_rezago, color = "darkgreen")
+
+# Cargas de los tres primeros componentes
+as_tibble(pca_con_rezago$rotation[, 1:3], rownames = "variable_rezagada") %>%
+  mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+  tabla_word("Cargas de las variables rezagadas en los primeros 3 componentes")
+```
+
+## DLNM usando PC1 del PCA sin rezago
+
+Se repite el modelo DLNM reemplazando `indice_calor` por `pc1_clima` (primer componente de `pca_sin_rezago`) para compararlos. El crossbasis se construye sobre `dlnm_data`, que tiene `casos_dengue` y clima completo para toda la serie.
+
+```{r pca1_dlnm_prep}
+# Se agrega PC1 a las filas de dlnm_data, uniendo por fecha_iso para no desalinear
+pc1_por_semana <- pca_datos_base %>%
+  select(fecha_iso) %>%
+  mutate(pc1_clima = pca_sin_rezago$x[, 1])
+
+dlnm_data_pc1 <- dlnm_data %>%
+  inner_join(pc1_por_semana, by = "fecha_iso")
+
+cat("Semanas con PC1 disponible para el DLNM:", nrow(dlnm_data_pc1),
+    "de", nrow(dlnm_data), "\n")
+```
+
+## Diagnóstico de cobertura de datos para PC1
+
+```{r pca1_dlnm_diagnostico_datos}
+# Distribución de PC1 y percentiles 2,5% y 97,5%
+histograma(dlnm_data_pc1, pc1_clima, "PC1 (clima)", bandas = TRUE)
+
+umbral_alto <- quantile(dlnm_data_pc1$pc1_clima, 0.95, na.rm = TRUE)
+n_extremo   <- sum(dlnm_data_pc1$pc1_clima > umbral_alto, na.rm = TRUE)
+n_total     <- sum(!is.na(dlnm_data_pc1$pc1_clima))
+
+cat("Observaciones en el 5% superior de PC1:", n_extremo, "de", n_total,
+    "totales (", round(100 * n_extremo / n_total, 1), "%)\n")
+```
+
+```{r pca1_dlnm_modelo}
+# Misma configuración que cb_calor (rezago 6, df 3 y 2) para que la comparación sea en igualdad de condiciones
+cb_pc1 <- crossbasis(dlnm_data_pc1$pc1_clima, lag = 6,
+                      argvar = list(fun = "ns", df = 3),
+                      arglag = list(fun = "ns", df = 2))
+
+modelo_pc1 <- glm(casos_dengue ~ cb_pc1, family = quasipoisson(), data = dlnm_data_pc1)
+
+rango_valido_pc1 <- quantile(dlnm_data_pc1$pc1_clima, c(0.025, 0.975), na.rm = TRUE)
+secuencia_pred_pc1 <- seq(rango_valido_pc1[1], rango_valido_pc1[2], length.out = 50)
+
+pred_pc1 <- crosspred(cb_pc1, modelo_pc1, at = secuencia_pred_pc1, bylag = 0.2)
+
+plot(pred_pc1, xlab = "PC1 (clima)", ylab = "Rezago (semanas)", zlab = "RR",
+     main = "")
+```
+
+```{r pca1_dlnm_diagnostico_modelo}
+# Diagnóstico del ajuste del modelo con PC1 (misma lectura que el del índice de calor)
+cat("Dispersión del modelo (PC1):", round(summary(modelo_pc1)$dispersion, 1), "\n")
+cat("Valor predicho mínimo:", signif(min(fitted(modelo_pc1)), 3), "\n")
+cat("Rango de los coeficientes:", round(range(coef(modelo_pc1)), 1), "\n")
+
+# RR máximo de toda la superficie y dónde está
+m_pc1 <- pred_pc1$matRRfit
+idx_pc1 <- which(m_pc1 == max(m_pc1), arr.ind = TRUE)[1, ]
+cat("RR máximo:", round(max(m_pc1), 2),
+    "| PC1:", round(as.numeric(rownames(m_pc1)[idx_pc1[1]]), 2),
+    "| rezago:", colnames(m_pc1)[idx_pc1[2]], "\n")
+```
+
+*Generado el `r Sys.Date()`. Trabajo Final Integrador, ITBA, Especialización en Ciencia de Datos.*
