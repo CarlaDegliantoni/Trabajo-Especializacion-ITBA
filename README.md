@@ -81,6 +81,5 @@ Los archivos de dengue y el CSV de RENABAP deben estar en `datos/datos crudos - 
 
 ## Versión de R y paquetes
 
-Versión de R utilizada: [completar].
-Para fijar las versiones exactas de los paquetes, correr `sessionInfo()` al final del Rmd y guardar la salida.
+Versión de R utilizada: R version 4.5.0 (2025-04-11 ucrt)
 
